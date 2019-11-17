@@ -8,6 +8,8 @@ import numpy as np
 import tensorflow as tf
 from nltk.translate.bleu_score import corpus_bleu
 from nltk.translate.bleu_score import SmoothingFunction
+from nltk.translate.meteor_score import meteor_score
+from jiwer import wer
 
 import network
 from utils import *
@@ -20,7 +22,8 @@ smoothie = SmoothingFunction().method4
 
 logger = logging.getLogger(__name__)
 
-def evaluation(sess, args, vocab, batches, model, classifier, output_path, write_dict, mode = 'valid'):
+
+def evaluation(sess, args, vocab, batches, model, classifier, output_path, write_dict, mode='valid'):
     transfer_acc = 0
     origin_acc = 0
     total = 0
@@ -63,14 +66,26 @@ def evaluation(sess, args, vocab, batches, model, classifier, output_path, write
     accumulator.output(mode, write_dict, mode)
     output_acc = (transfer_acc / float(total))
     logger.info("transfer acc: %.4f" % output_acc)
+
     bleu = corpus_bleu(ref, hypo, smoothing_function=smoothie)
     logger.info("Bleu score: %.4f" % bleu)
 
-    add_summary_value(write_dict['writer'], ['acc', 'bleu'], [output_acc, bleu], write_dict['step'], mode)
+    wer_score = wer(ref, hypo)
+    logger.info("WER score: %.4f" % wer_score)
+
+    meteor = meteor_score(ref, hypo)
+    logger.info("METEOR score: %.4f" % meteor)
+
+    add_summary_value(write_dict['writer'], ['acc', 'bleu', 'wer', 'hypo'], [output_acc, bleu, wer_score, meteor],
+                      write_dict['step'], mode)
 
     if mode == 'online-test':
         bleu = corpus_bleu(ori_ref, hypo, smoothing_function=smoothie)
         logger.info("Bleu score on original sentences: %.4f" % bleu)
+
+        meteor = meteor_score(ori_ref, hypo)
+        logger.info("METEOR score on original sentences: %.4f" % meteor)
+
         write_output(origin, transfer, reconstruction, output_path, ref)
     elif args.save_samples:
         write_output_v0(origin, transfer, reconstruction, output_path)
@@ -87,8 +102,9 @@ def create_model(sess, args, vocab):
         logger.info('-----Creating styler model with fresh parameters.-----')
         sess.run(tf.global_variables_initializer())
     if not os.path.exists(args.styler_path):
-            os.makedirs(args.styler_path)
+        os.makedirs(args.styler_path)
     return model
+
 
 if __name__ == '__main__':
     args = load_arguments()
@@ -106,8 +122,8 @@ if __name__ == '__main__':
     if not os.path.exists(tensorboard_dir):
         os.makedirs(tensorboard_dir)
     write_dict = {
-    'writer': tf.summary.FileWriter(logdir=tensorboard_dir, filename_suffix=args.suffix),
-    'step': 0
+        'writer': tf.summary.FileWriter(logdir=tensorboard_dir, filename_suffix=args.suffix),
+        'step': 0
     }
 
     # load data
@@ -133,7 +149,8 @@ if __name__ == '__main__':
         classifier = eval('network.classifier.CNN_Model')(args, vocab)
         # load pretrained classifer for test
         classifier.saver.restore(sess, os.path.join(args.classifier_path, 'model'))
-        logger.info("-----%s classifier model loading from %s successfully!-----" % (args.dataset, args.classifier_path))
+        logger.info(
+            "-----%s classifier model loading from %s successfully!-----" % (args.dataset, args.classifier_path))
 
         batches = loader.get_batches(mode='train')
         start_time = time.time()
@@ -144,7 +161,7 @@ if __name__ == '__main__':
         best_bleu = 0.0
         acc_cut = 0.90
         gamma = args.gamma_init
-        for epoch in range(1, 1+args.max_epochs):
+        for epoch in range(1, 1 + args.max_epochs):
             logger.info('--------------------epoch %d--------------------' % epoch)
             logger.info('learning_rate: %.4f  gamma: %.4f' % (learning_rate, gamma))
 
@@ -152,26 +169,27 @@ if __name__ == '__main__':
             # 2835 is the iteration number when full dataset is used
             total_batch = max(2835, len(batches))
             for i in range(total_batch):
-                model.run_train_step(sess, batches[i%len(batches)], accumulator, epoch)
+                model.run_train_step(sess, batches[i % len(batches)], accumulator, epoch)
 
                 step += 1
                 write_dict['step'] = step
                 if step % 1000 == 0:
-                # if step % args.train_checkpoint_step == 0:
+                    # if step % args.train_checkpoint_step == 0:
                     accumulator.output('step %d, time %.0fs,'
-                        % (step, time.time() - start_time), write_dict, 'train')
+                                       % (step, time.time() - start_time), write_dict, 'train')
                     accumulator.clear()
 
                     # validation
                     val_batches = loader.get_batches(mode='valid')
                     acc, bleu = evaluation(sess, args, vocab, val_batches, model, classifier,
-                        os.path.join(output_path, 'epoch%d' % epoch), write_dict, mode='valid')
+                                           os.path.join(output_path, 'epoch%d' % epoch), write_dict, mode='valid')
 
                     # evaluate online test dataset
                     if args.online_test and acc > acc_cut and bleu > best_bleu:
                         best_bleu = bleu
                         acc, bleu = evaluation(sess, args, vocab, online_data, model, classifier,
-                            os.path.join(output_online_path, 'step%d' % step), write_dict, mode='online-test')
+                                               os.path.join(output_online_path, 'step%d' % step), write_dict,
+                                               mode='online-test')
 
                     if args.save_model:
                         logger.info('Saving style transfer model...')
@@ -180,4 +198,4 @@ if __name__ == '__main__':
         # testing
         test_batches = loader.get_batches(mode='test')
         evaluation(sess, args, vocab, test_batches, model, classifier,
-            os.path.join(output_path, 'test'), write_dict, mode='test')
+                   os.path.join(output_path, 'test'), write_dict, mode='test')
